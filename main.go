@@ -5,8 +5,10 @@ import (
 	"os"
 	"sort"
 	"sync"
+	"text/tabwriter"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 	flag "github.com/spf13/pflag"
 )
@@ -16,16 +18,21 @@ const (
 	limitFlag = "limit"
 )
 
+var tw *tabwriter.Writer
+
 func init() {
+	tw = new(tabwriter.Writer)
+	tw.Init(os.Stdout, 5, 0, 1, ' ', 0)
+
 	// Log as JSON instead of the default ASCII formatter.
-	// log.SetFormatter(&logrus.JSONFormatter{})
+	log.SetFormatter(&logrus.JSONFormatter{})
 
 	// Output to stdout instead of the default stderr
 	// Can be any io.Writer, see below for File example
 	log.SetOutput(os.Stdout)
 
 	// Only log the warning severity or above.
-	log.SetLevel(log.InfoLevel)
+	log.SetLevel(log.WarnLevel)
 }
 
 // FileDiskUsage descriptor for file disk usage
@@ -175,7 +182,14 @@ func collectLastN(files <-chan FileDiskUsage, nextOut chan<- []FileDiskUsage, n 
 }
 
 func printLastN(out []FileDiskUsage) {
+	// fmt.Fprint(tw, "\033[2J")
+	// fmt.Fprint(tw, "\033[H")
+	fmt.Fprint(tw, "Path\tSize\n")
 	for _, f := range out {
-		fmt.Printf("Path: %s \t\t-> %d\n", f.Path, f.Size)
+		fmt.Fprintf(tw, "%s\t%d\n", f.Path, f.Size)
 	}
+
+	fmt.Fprintln(tw)
+	tw.Flush()
+
 }
