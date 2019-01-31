@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"sync"
@@ -16,6 +17,7 @@ import (
 const (
 	pathFlag  = "path"
 	limitFlag = "limit"
+	liveFlag  = "live"
 )
 
 var tw *tabwriter.Writer
@@ -35,7 +37,7 @@ func init() {
 	log.SetLevel(log.WarnLevel)
 }
 
-// FileDiskUsage descriptor for file disk usage
+// FileDiskUsage descriptor for file disk usage per path
 type FileDiskUsage struct {
 	Path string
 	Size int64
@@ -43,8 +45,9 @@ type FileDiskUsage struct {
 
 func initFlags(cmd string, args []string) *flag.FlagSet {
 	flagset := flag.NewFlagSet(cmd, flag.ExitOnError)
-	flagset.StringP(pathFlag, "p", "", "defines the target path to search for files and their disk usage")
-	flagset.IntP(limitFlag, "l", 100, "defines the limit of top biggest files to print out")
+	flagset.StringP(pathFlag, "p", "", "Defines the target path to search for files and their disk usage")
+	flagset.IntP(limitFlag, "l", 100, "Defines the limit of top biggest files to print out")
+	flagset.Bool(liveFlag, false, "Enable live output")
 	flagset.Parse(args)
 
 	return flagset
@@ -67,54 +70,64 @@ func main() {
 		log.Fatal(err)
 	}
 
+	live, err := flags.GetBool(liveFlag)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	log.Printf("Seeking top %d biggest files in path '%s'", limit, path)
 
-	files := make(chan FileDiskUsage)
+	diskUsage := make(chan FileDiskUsage)
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
 
 	go func() {
 		log.Printf("Starting with path: %s", path)
-		if err := walkDir(path, wg, files); err != nil {
+		if err := walkDir(path, wg, diskUsage); err != nil {
 			log.Printf("Error processing path %s: %v", path, err)
 		}
 	}()
 
 	go func() {
 		wg.Wait()
-		close(files)
+		close(diskUsage)
 	}()
 
-	currentStatus := make(chan []FileDiskUsage)
+	lastDiskUsage := make(chan []FileDiskUsage)
 	go func() {
-		collectLastN(files, currentStatus, limit)
+		collectLastN(diskUsage, lastDiskUsage, limit)
 	}()
 
-	semaphore := make(chan struct{}, 1)
+	drained := make(chan struct{}, 1)
 	ticker := time.NewTicker(10 * time.Millisecond)
+
 	go func() {
-		for cs := range currentStatus {
+		var last []FileDiskUsage
+		for cs := range lastDiskUsage {
 			select {
 			case <-ticker.C:
-				if cs != nil {
-					printLastN(cs)
+				if live {
+					last = cs
+					tw.Flush()
+					printLastN(tw, last)
 				}
-			case _, ok := <-files:
-				if !ok {
-					ticker.Stop()
-					printLastN(cs)
-					semaphore <- struct{}{}
-				}
+			default:
+				last = cs
 			}
 		}
+
+		ticker.Stop()
+		tw.Flush()
+		printLastN(tw, last)
+		drained <- struct{}{}
 	}()
 
-	<-semaphore
-	close(semaphore)
-	close(currentStatus)
+	<-drained
+	close(drained)
+	close(lastDiskUsage)
 }
 
-func walkDir(path string, wg *sync.WaitGroup, files chan<- FileDiskUsage) error {
+func walkDir(path string, wg *sync.WaitGroup, diskUsage chan<- FileDiskUsage) error {
 	defer wg.Done()
 
 	log.Debugf("Processing path %s\n", path)
@@ -130,21 +143,21 @@ func walkDir(path string, wg *sync.WaitGroup, files chan<- FileDiskUsage) error 
 	}
 
 	for _, entry := range dirents {
-		entryPath := fmt.Sprintf("%s/%s", path, entry)
-		fentry, err := os.Stat(entryPath)
+		filePath := fmt.Sprintf("%s/%s", path, entry)
+		fileinfo, err := os.Stat(filePath)
 		if err != nil {
 			return err
 		}
 
-		if fentry.IsDir() {
+		if fileinfo.IsDir() {
 			wg.Add(1)
 			go func(subDir string, wg *sync.WaitGroup, fc chan<- FileDiskUsage) {
 				walkDir(subDir, wg, fc)
-			}(entryPath, wg, files)
+			}(filePath, wg, diskUsage)
 		} else {
-			files <- FileDiskUsage{
-				Path: entryPath,
-				Size: fentry.Size(),
+			diskUsage <- FileDiskUsage{
+				Path: filePath,
+				Size: fileinfo.Size(),
 			}
 		}
 
@@ -181,15 +194,9 @@ func collectLastN(files <-chan FileDiskUsage, nextOut chan<- []FileDiskUsage, n 
 	}
 }
 
-func printLastN(out []FileDiskUsage) {
-	// fmt.Fprint(tw, "\033[2J")
-	// fmt.Fprint(tw, "\033[H")
-	fmt.Fprint(tw, "Path\tSize\n")
-	for _, f := range out {
-		fmt.Fprintf(tw, "%s\t%d\n", f.Path, f.Size)
+func printLastN(writer io.Writer, usages []FileDiskUsage) {
+	fmt.Fprint(writer, "Path\tSize\n")
+	for _, f := range usages {
+		fmt.Fprintf(writer, "%s\t%d\n", f.Path, f.Size)
 	}
-
-	fmt.Fprintln(tw)
-	tw.Flush()
-
 }
