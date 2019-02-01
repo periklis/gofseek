@@ -26,11 +26,10 @@ func init() {
 	tw = new(tabwriter.Writer)
 	tw.Init(os.Stdout, 5, 0, 1, ' ', 0)
 
-	// Log as JSON instead of the default ASCII formatter.
-	log.SetFormatter(&logrus.JSONFormatter{})
+	// Log with the default ASCII formatter.
+	log.SetFormatter(&logrus.TextFormatter{})
 
 	// Output to stdout instead of the default stderr
-	// Can be any io.Writer, see below for File example
 	log.SetOutput(os.Stdout)
 
 	// Only log the warning severity or above.
