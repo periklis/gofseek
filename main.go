@@ -94,37 +94,37 @@ func main() {
 	}()
 
 	lastDiskUsage := make(chan []FileDiskUsage)
+
 	go func() {
 		collectLastN(diskUsage, lastDiskUsage, limit)
 	}()
 
 	drained := make(chan struct{}, 1)
-	ticker := time.NewTicker(10 * time.Millisecond)
+	ticker := time.NewTicker(100 * time.Millisecond)
 
 	go func() {
 		var last []FileDiskUsage
 		for cs := range lastDiskUsage {
 			select {
-			case <-ticker.C:
+			case tick := <-ticker.C:
 				if live {
 					last = cs
-					tw.Flush()
+					log.Debugf("Print %v on tick %d\n", last, tick)
 					printLastN(tw, last)
 				}
 			default:
 				last = cs
+				log.Debugf("Save pointer to last sorted disk usage: \n%v\n", last)
 			}
 		}
 
 		ticker.Stop()
-		tw.Flush()
 		printLastN(tw, last)
 		drained <- struct{}{}
 	}()
 
 	<-drained
 	close(drained)
-	close(lastDiskUsage)
 }
 
 func walkDir(path string, wg *sync.WaitGroup, diskUsage chan<- FileDiskUsage) error {
@@ -192,6 +192,8 @@ func collectLastN(files <-chan FileDiskUsage, nextOut chan<- []FileDiskUsage, n 
 
 		nextOut <- buf
 	}
+
+	close(nextOut)
 }
 
 func printLastN(writer io.Writer, usages []FileDiskUsage) {
@@ -199,4 +201,5 @@ func printLastN(writer io.Writer, usages []FileDiskUsage) {
 	for _, f := range usages {
 		fmt.Fprintf(writer, "%s\t%d\n", f.Path, f.Size)
 	}
+	tw.Flush()
 }
